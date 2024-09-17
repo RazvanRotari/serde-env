@@ -31,7 +31,12 @@ pub fn from_env<T>() -> Result<T, Error>
 where
     T: de::DeserializeOwned,
 {
-    T::deserialize(Deserializer(Node::from_env()))
+    let deserializer = Deserializer(Node::from_env());
+    let result = serde_path_to_error::deserialize(deserializer);
+    match result {
+        Ok(result) => Ok(result),
+        Err(err) => Err(from_serde_path_to_error(err)),
+    }
 }
 /// Deserialize into struct via env with a prefix.
 ///
@@ -66,7 +71,12 @@ pub fn from_env_with_prefix<T>(prefix: &str) -> Result<T, Error>
 where
     T: de::DeserializeOwned,
 {
-    T::deserialize(Deserializer(Node::from_env_with_prefix(prefix)))
+    let deserializer = Deserializer(Node::from_env_with_prefix(prefix));
+    let result = serde_path_to_error::deserialize(deserializer);
+    match result {
+        Ok(result) => Ok(result),
+        Err(err) => Err(from_serde_path_to_error(err)),
+    }
 }
 
 /// Deserialize into struct via an iterable of `(AsRef<str>, AsRef<str>)`
@@ -103,7 +113,12 @@ where
     S: AsRef<str>,
     T: de::DeserializeOwned,
 {
-    T::deserialize(Deserializer(Node::from_iter(iter)))
+    let deserializer = Deserializer(Node::from_iter(iter));
+    let result = serde_path_to_error::deserialize(deserializer);
+    match result {
+        Ok(result) => Ok(result),
+        Err(err) => Err(from_serde_path_to_error(err)),
+    }
 }
 
 /// Deserialize into struct via an iterable of `(AsRef<str>, AsRef<str>)`
@@ -140,7 +155,17 @@ where
     S: AsRef<str>,
     T: de::DeserializeOwned,
 {
-    T::deserialize(Deserializer(Node::from_iter_with_prefix(iter, prefix)))
+    let deserializer = Deserializer(Node::from_iter_with_prefix(iter, prefix));
+    let result = serde_path_to_error::deserialize(deserializer);
+    match result {
+        Ok(result) => Ok(result),
+        Err(err) => Err(from_serde_path_to_error(err)),
+    }
+}
+
+fn from_serde_path_to_error(err: serde_path_to_error::Error<Error>) -> Error {
+    let inner = err.inner();
+    Error::from_str(format!("{}: {}", err.path(), inner.to_string()).as_str())
 }
 
 struct Deserializer(Node);
@@ -711,6 +736,23 @@ mod tests {
         )
     }
 
+    #[test]
+    fn test_bool_fail() {
+        temp_env::with_vars(vec![("BAZ", Some("maybe"))], || {
+            let actual: Result<Foo, Error> = from_env();
+            assert_eq!(
+                actual.unwrap_err().to_string(),
+                "baz: provided string was not `true` or `false`"
+            )
+        })
+    }
+
+    #[test]
+    fn test_missing_field() {
+        let actual: Result<Foo, Error> = from_env();
+        assert_eq!(actual.unwrap_err().to_string(), ".: missing field `bar`")
+    }
+
     #[derive(Deserialize, PartialEq, Debug)]
     struct TestStructAlias {
         #[serde(alias = "meta_log_level")]
@@ -847,6 +889,14 @@ mod tests {
         temp_env::with_vars(vec![("FOO", Some("Z")), ("FOO_A", Some("1"))], || {
             let t: ExternallyEnumStruct = from_env().expect("must success");
             assert_eq!(t.foo, ExternallyEnum::Z { a: 1 })
+        });
+    }
+
+    #[test]
+    fn test_from_env_fail() {
+        temp_env::with_vars(vec![("FOO", Some("X1"))], || {
+            let t: Result<ExternallyEnumStruct, Error> = from_env();
+            assert_eq!(t.unwrap_err().to_string(), "foo: no variant found")
         });
     }
 
@@ -1008,6 +1058,26 @@ mod tests {
                     })
                 )
             },
+        );
+    }
+
+    #[test]
+    fn inner_mapping_with_enum_keys_fail() {
+        #[derive(Debug, Deserialize, Eq, Hash, PartialEq)]
+        enum MappingKey {
+            Option1,
+            Option2,
+        }
+        #[derive(Debug, Deserialize, Eq, PartialEq)]
+        struct Mapping {
+            val: HashMap<MappingKey, String>,
+        }
+
+        let env = vec![("VAL_OPTION3", "FOO"), ("VAL_OPTION2", "BAR")];
+        let result: Result<Mapping, Error> = from_iter(env);
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "val.?: unknown variant `option3`, expected `Option1` or `Option2`"
         );
     }
 
